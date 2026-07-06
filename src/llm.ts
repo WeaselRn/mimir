@@ -3,11 +3,12 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-if (!process.env.GEMINI_API_KEY) {
+const geminiApiKey = process.env.GEMINI_API_KEY;
+if (!geminiApiKey) {
   throw new Error('GEMINI_API_KEY environment variable is required');
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
 // ---------------------------------------------------------------------------
 // Types
@@ -154,7 +155,7 @@ export async function extractFacts(
   }
 
   try {
-    return JSON.parse(text) as ExtractedFacts;
+    return (JSON.parse(text) as unknown) as ExtractedFacts;
   } catch {
     console.error('[llm] Failed to parse extractFacts response:', text);
     return { decisions: [], experts: [], tasks: [], resources: [] };

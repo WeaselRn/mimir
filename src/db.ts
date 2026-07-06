@@ -5,15 +5,16 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-if (!process.env.DATABASE_URL) {
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) {
   throw new Error('DATABASE_URL environment variable is required');
 }
 
 // Use a single connection for the long-running bot process.
 // For Supabase Transaction Pooler (port 6543) set prepare: false.
-const isPooler = process.env.DATABASE_URL.includes(':6543');
+const isPooler = databaseUrl.includes(':6543');
 
-const client = postgres(process.env.DATABASE_URL, {
+const client = postgres(databaseUrl, {
   max: 10,
   idle_timeout: 30,
   prepare: !isPooler, // prepared statements not supported on pgBouncer/Transaction Pooler

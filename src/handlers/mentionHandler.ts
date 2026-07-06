@@ -24,7 +24,7 @@ async function findRelevantDecisions(embedding: number[]): Promise<StoredDecisio
     LIMIT ${MAX_RESULTS}
   `);
 
-  return (rows as Array<{
+  return ((rows as unknown) as Array<{
     question: string;
     answer: string;
     participants: string[] | null;

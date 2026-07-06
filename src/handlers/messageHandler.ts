@@ -61,7 +61,7 @@ async function findSimilarDecisions(embedding: number[]) {
     LIMIT 5
   `);
 
-  return rows as Array<{
+  return (rows as unknown) as Array<{
     id: number;
     question: string;
     answer: string;

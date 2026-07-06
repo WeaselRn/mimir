@@ -1,34 +1,29 @@
 import 'dotenv/config';
-import { App } from '@slack/bolt';
+import { App, LogLevel } from '@slack/bolt';
 import { handleMessage } from './handlers/messageHandler';
 import { handleMention } from './handlers/mentionHandler';
 
 // ---------------------------------------------------------------------------
 // Validate required env vars early
 // ---------------------------------------------------------------------------
-const required = [
-  'SLACK_BOT_TOKEN',
-  'SLACK_APP_TOKEN',
-  'SLACK_SIGNING_SECRET',
-  'DATABASE_URL',
-  'GEMINI_API_KEY',
-];
-for (const key of required) {
-  if (!process.env[key]) {
-    console.error(`❌ Missing required environment variable: ${key}`);
-    process.exit(1);
-  }
+const slackBotToken = process.env.SLACK_BOT_TOKEN;
+const slackAppToken = process.env.SLACK_APP_TOKEN;
+const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
+
+if (!slackBotToken || !slackAppToken || !slackSigningSecret) {
+  console.error('❌ Missing required Slack environment variables (SLACK_BOT_TOKEN, SLACK_APP_TOKEN, SLACK_SIGNING_SECRET)');
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
 // Initialize Slack Bolt App (Socket Mode)
 // ---------------------------------------------------------------------------
 const app = new App({
-  token: process.env.SLACK_BOT_TOKEN!,
-  appToken: process.env.SLACK_APP_TOKEN!,
-  signingSecret: process.env.SLACK_SIGNING_SECRET!,
+  token: slackBotToken,
+  appToken: slackAppToken,
+  signingSecret: slackSigningSecret,
   socketMode: true,
-  logLevel: process.env.NODE_ENV === 'development' ? 'DEBUG' : 'INFO',
+  logLevel: process.env.NODE_ENV === 'development' ? LogLevel.DEBUG : LogLevel.INFO,
 });
 
 // ---------------------------------------------------------------------------
@@ -37,8 +32,8 @@ const app = new App({
 let botUserId = '';
 
 async function getBotUserId(): Promise<string> {
-  const auth = await app.client.auth.test({ token: process.env.SLACK_BOT_TOKEN! });
-  return auth.user_id as string;
+  const auth = await app.client.auth.test({ token: slackBotToken });
+  return (auth.user_id as unknown) as string;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,7 +52,7 @@ app.message(async ({ message, client }) => {
     userId: message.user,
     text: message.text,
     ts: message.ts,
-    threadTs: ('thread_ts' in message ? message.thread_ts : undefined) as string | undefined,
+    threadTs: (('thread_ts' in message ? message.thread_ts : undefined) as unknown) as string | undefined,
     botUserId,
   });
 });
@@ -66,6 +61,7 @@ app.message(async ({ message, client }) => {
 // App mention event handler
 // ---------------------------------------------------------------------------
 app.event('app_mention', async ({ event, client }) => {
+  if (!event.user) return;
   await handleMention({
     client,
     channelId: event.channel,
