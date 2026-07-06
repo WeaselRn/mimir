@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   message_ts   TEXT,
   channel_id   TEXT,
   thread_ts    TEXT,
-  embedding    extensions.vector(768)
+  embedding    vector(768)
 );
 
 -- 3. experts table
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS experts (
 --    (Requires at least ~1000 rows before it's faster than a full scan)
 CREATE INDEX IF NOT EXISTS decisions_embedding_idx
   ON decisions
-  USING ivfflat (embedding extensions.vector_cosine_ops)
+  USING ivfflat (embedding vector_cosine_ops)
   WITH (lists = 100);
 
 -- 5. Helpful index for expert look-ups

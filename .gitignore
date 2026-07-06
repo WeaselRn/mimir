@@ -24,4 +24,5 @@ Thumbs.db
 npm-debug.log*
 
 # TypeScript
-*.tsbuildinfo
+*.tsbuildinfo
+deep-research-report.md
