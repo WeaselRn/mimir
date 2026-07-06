@@ -1,8 +1,8 @@
 import { WebClient } from '@slack/web-api';
 import { db } from '../db';
-import { decisions, experts, NewDecision, NewExpert } from '../schema';
-import { embedText, extractFacts } from '../llm';
-import { sql, gt } from 'drizzle-orm';
+import { decisions, experts, tasks, resources, NewDecision, NewTask, NewResource } from '../schema';
+import { embedText, extractFacts, ExtractedTask, ExtractedResource } from '../llm';
+import { sql } from 'drizzle-orm';
 
 const SIMILARITY_THRESHOLD = 0.8;
 const MAX_CONTEXT_MESSAGES = 10;
@@ -53,10 +53,10 @@ async function findSimilarDecisions(embedding: number[]) {
   const rows = await db.execute(sql`
     SELECT 
       id, question, answer, participants, created_at, channel_id, thread_ts,
-      1 - (embedding <=> ${vectorLiteral}::extensions.vector) AS similarity
+      1 - (embedding <=> ${vectorLiteral}::vector) AS similarity
     FROM decisions
     WHERE embedding IS NOT NULL
-      AND 1 - (embedding <=> ${vectorLiteral}::extensions.vector) > ${SIMILARITY_THRESHOLD}
+      AND 1 - (embedding <=> ${vectorLiteral}::vector) > ${SIMILARITY_THRESHOLD}
     ORDER BY similarity DESC
     LIMIT 5
   `);
@@ -74,13 +74,13 @@ async function findSimilarDecisions(embedding: number[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Upsert decisions extracted from a message
+// Save decisions extracted from a message
 // ---------------------------------------------------------------------------
 async function saveDecisions(
   extracted: Awaited<ReturnType<typeof extractFacts>>['decisions'],
   embedding: number[],
   channelId: string,
-  messageTts: string,
+  messageTs: string,
   threadTs?: string
 ) {
   for (const d of extracted) {
@@ -89,7 +89,7 @@ async function saveDecisions(
       answer: d.answer,
       participants: d.participants,
       channelId,
-      messageTts,
+      messageTs,
       threadTs: threadTs ?? null,
       embedding,
     };
@@ -98,22 +98,63 @@ async function saveDecisions(
 }
 
 // ---------------------------------------------------------------------------
-// Upsert experts extracted from a message
+// Upsert experts — increments evidence_count on conflict
+// (Requires UNIQUE(user_id, skill) constraint on the experts table)
 // ---------------------------------------------------------------------------
 async function saveExperts(
   extracted: Awaited<ReturnType<typeof extractFacts>>['experts'],
-  messageTts: string
+  messageTs: string
 ) {
   for (const e of extracted) {
     for (const skill of e.skills) {
-      // Try to increment evidence_count if record exists, otherwise insert
       await db.execute(sql`
         INSERT INTO experts (user_id, skill, evidence_count, message_ts)
-        VALUES (${e.user_id}, ${skill}, 1, ${messageTts})
-        ON CONFLICT (user_id, skill) 
+        VALUES (${e.user_id}, ${skill}, 1, ${messageTs})
+        ON CONFLICT ON CONSTRAINT experts_user_skill_unique
         DO UPDATE SET evidence_count = experts.evidence_count + 1
       `);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Save tasks extracted from a message
+// ---------------------------------------------------------------------------
+async function saveTasks(
+  extracted: ExtractedTask[],
+  channelId: string,
+  messageTs: string
+) {
+  for (const t of extracted) {
+    const newTask: NewTask = {
+      description: t.title,
+      ownerId: t.assignee ?? null,
+      dueDate: t.due_date ?? null,
+      completed: false,
+      channelId,
+      messageTs,
+    };
+    await db.insert(tasks).values(newTask);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Save resources extracted from a message
+// ---------------------------------------------------------------------------
+async function saveResources(
+  extracted: ExtractedResource[],
+  channelId: string,
+  messageTs: string
+) {
+  for (const r of extracted) {
+    const newResource: NewResource = {
+      title: r.title,
+      url: r.url ?? null,
+      description: r.description ?? null,
+      channelId,
+      messageTs,
+    };
+    await db.insert(resources).values(newResource);
   }
 }
 
@@ -145,7 +186,9 @@ export async function handleMessage(params: {
     // 2. Extract facts with LLM
     const facts = await extractFacts(text, context);
     console.log(
-      `[messageHandler] Extracted: ${facts.decisions.length} decisions, ${facts.experts.length} experts`
+      `[messageHandler] Extracted: ${facts.decisions.length} decisions, ` +
+      `${facts.experts.length} experts, ${facts.tasks.length} tasks, ` +
+      `${facts.resources.length} resources`
     );
 
     // 3. Embed the message text
@@ -154,14 +197,28 @@ export async function handleMessage(params: {
     // 4. Save extracted decisions with their embeddings
     if (facts.decisions.length > 0) {
       await saveDecisions(facts.decisions, embedding, channelId, ts, threadTs);
+      console.log(`[messageHandler] Saved ${facts.decisions.length} decision(s)`);
     }
 
-    // 5. Save extracted experts
+    // 5. Save extracted experts (upserts evidence count)
     if (facts.experts.length > 0) {
       await saveExperts(facts.experts, ts);
+      console.log(`[messageHandler] Saved/updated expert records`);
     }
 
-    // 6. Check similarity against stored decisions for proactive hint
+    // 6. Save extracted tasks
+    if (facts.tasks.length > 0) {
+      await saveTasks(facts.tasks, channelId, ts);
+      console.log(`[messageHandler] Saved ${facts.tasks.length} task(s)`);
+    }
+
+    // 7. Save extracted resources
+    if (facts.resources.length > 0) {
+      await saveResources(facts.resources, channelId, ts);
+      console.log(`[messageHandler] Saved ${facts.resources.length} resource(s)`);
+    }
+
+    // 8. Check similarity against stored decisions for proactive hint
     const similar = await findSimilarDecisions(embedding);
 
     if (similar.length > 0) {

@@ -163,10 +163,10 @@ export async function extractFacts(
 }
 
 // ---------------------------------------------------------------------------
-// Query Answering
+// Query Answering — multi-source context
 // ---------------------------------------------------------------------------
 const ANSWER_SYSTEM_PROMPT = `You are Mimir, an organizational memory assistant for a Slack workspace.
-You have access to past decisions and knowledge stored in the org's memory.
+You have access to past decisions, known experts, tasks, and resources stored in the org's memory.
 Answer the user's question based on the provided context. Be concise and direct.
 If the stored context doesn't contain enough information, say so honestly.
 Format your answer for Slack (use *bold*, _italic_, bullet points as needed).`;
@@ -180,25 +180,92 @@ export interface StoredDecision {
   threadTs: string | null;
 }
 
+export interface StoredExpert {
+  userId: string;
+  skill: string;
+  evidenceCount: number;
+}
+
+export interface StoredTask {
+  description: string;
+  ownerId: string | null;
+  dueDate: string | null;
+  completed: boolean;
+  createdAt: Date;
+}
+
+export interface StoredResource {
+  title: string;
+  url: string | null;
+  description: string | null;
+  createdAt: Date;
+}
+
+export interface QueryContext {
+  decisions: StoredDecision[];
+  experts: StoredExpert[];
+  tasks: StoredTask[];
+  resources: StoredResource[];
+}
+
 export async function answerQuery(
   query: string,
-  relevantDecisions: StoredDecision[]
+  context: QueryContext
 ): Promise<string> {
-  const context = relevantDecisions
-    .map((d, i) => {
-      const date = d.createdAt.toLocaleDateString('en-US', {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-      const who = d.participants?.join(', ') || 'unknown';
-      return `[${i + 1}] *Decision* (${date}, participants: ${who})\nQ: ${d.question}\nA: ${d.answer}`;
-    })
-    .join('\n\n');
+  const sections: string[] = [];
 
-  const prompt = context
-    ? `Relevant org memory:\n\n${context}\n\nUser query: ${query}`
-    : `User query: ${query}\n\n(No relevant past decisions found in org memory.)`;
+  // Format decisions
+  if (context.decisions.length > 0) {
+    const decisionsText = context.decisions
+      .map((d, i) => {
+        const date = d.createdAt.toLocaleDateString('en-US', {
+          year: 'numeric', month: 'short', day: 'numeric',
+        });
+        const who = d.participants?.join(', ') || 'unknown';
+        return `[${i + 1}] *Decision* (${date}, participants: ${who})\nQ: ${d.question}\nA: ${d.answer}`;
+      })
+      .join('\n\n');
+    sections.push(`*Past Decisions:*\n${decisionsText}`);
+  }
+
+  // Format experts
+  if (context.experts.length > 0) {
+    const expertsText = context.experts
+      .map((e) => `• <@${e.userId}> — *${e.skill}* (${e.evidenceCount} evidence${e.evidenceCount !== 1 ? 's' : ''})`)
+      .join('\n');
+    sections.push(`*Known Experts:*\n${expertsText}`);
+  }
+
+  // Format tasks
+  if (context.tasks.length > 0) {
+    const tasksText = context.tasks
+      .map((t) => {
+        const owner = t.ownerId ? `<@${t.ownerId}>` : 'unassigned';
+        const due = t.dueDate ? ` (due ${t.dueDate})` : '';
+        const status = t.completed ? '✅' : '⏳';
+        return `${status} ${t.description} — ${owner}${due}`;
+      })
+      .join('\n');
+    sections.push(`*Tasks:*\n${tasksText}`);
+  }
+
+  // Format resources
+  if (context.resources.length > 0) {
+    const resourcesText = context.resources
+      .map((r) => {
+        const link = r.url ? ` (<${r.url}|link>)` : '';
+        const desc = r.description ? ` — ${r.description}` : '';
+        return `• ${r.title}${link}${desc}`;
+      })
+      .join('\n');
+    sections.push(`*Resources:*\n${resourcesText}`);
+  }
+
+  const contextBlock = sections.length > 0
+    ? sections.join('\n\n')
+    : '(No relevant information found in org memory.)';
+
+  const prompt = `Relevant org memory:\n\n${contextBlock}\n\nUser query: ${query}`;
 
   const response = await ai.models.generateContent({
     model: 'gemini-2.0-flash',
