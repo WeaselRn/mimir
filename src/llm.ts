@@ -20,7 +20,6 @@ export interface ExtractedDecision {
 }
 
 export interface ExtractedExpert {
-  user_id: string;
   skills: string[];
 }
 
@@ -63,19 +62,35 @@ export async function embedText(text: string): Promise<number[]> {
 // ---------------------------------------------------------------------------
 // Fact Extraction
 // ---------------------------------------------------------------------------
-const EXTRACT_SYSTEM_PROMPT = `You are an organizational memory assistant. 
-Given a Slack message (and optionally its thread context), extract structured knowledge.
+const EXTRACT_SYSTEM_PROMPT = `You are a Slack assistant that identifies decisions, expertise, tasks, and resources from a conversation.
+Given the conversation context and the latest message, extract structured knowledge.
 
-Return a JSON object with:
-- decisions: array of {question, answer, participants} — only concrete decisions made
-- experts: array of {user_id, skills} — only demonstrated knowledge, not guesses  
-- tasks: array of {title, assignee?, due_date?} — only explicit commitments
-- resources: array of {title, url?, description?} — links, docs, tools mentioned
+Return a JSON object with four arrays: decisions, experts, tasks, resources.
+
+1. decisions — concrete decisions made in the conversation.
+   Each entry: { "question", "answer", "participants" (Slack IDs of involved users) }.
+   Example — Alice: "Should we use Redis or PostgreSQL?" Bob: "Redis because of built-in TTL."
+   → { "question": "Should we use Redis or PostgreSQL for caching?", "answer": "Redis", "participants": ["Alice","Bob"] }
+   If no decision is present, output [].
+
+2. experts — skills the message author demonstrably knows ("I know X", "I wrote Y", "I fixed Z").
+   Each entry: { "skills": ["Topic1", "Topic2"] }  (user_id will be attached by code — do NOT include it).
+   Example — "I have 10 years with Docker and Kubernetes" → { "skills": ["Docker","Kubernetes"] }
+   If no expertise is demonstrated, output [].
+
+3. tasks — explicit commitments or action items.
+   Each entry: { "title", "assignee"? (Slack ID), "due_date"? }.
+   Example — "I'll finish the API by tomorrow" → { "title": "Finish the API", "assignee": "U1234", "due_date": "2026-07-09" }
+   If no task is mentioned, output [].
+
+4. resources — links, docs, or tools shared.
+   Each entry: { "title", "url"?, "description"? }.
+   If nothing is shared, output [].
 
 Rules:
-- If nothing meaningful was decided or shared, return empty arrays.
-- participants should be Slack user IDs (e.g. U12345) when available, else names.
-- Be conservative: prefer quality over quantity.`;
+- Be inclusive: prefer capturing a real item over missing it.
+- participants should be Slack user IDs (e.g. U12345) when available, else display names.
+- Do NOT include user_id inside expert entries.`;
 
 export async function extractFacts(
   message: string,
@@ -113,10 +128,9 @@ export async function extractFacts(
             items: {
               type: 'object' as const,
               properties: {
-                user_id: { type: 'string' as const },
                 skills: { type: 'array' as const, items: { type: 'string' as const } },
               },
-              required: ['user_id', 'skills'],
+              required: ['skills'],
             },
           },
           tasks: {

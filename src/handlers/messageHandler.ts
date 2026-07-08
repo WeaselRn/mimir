@@ -5,7 +5,7 @@ import { embedText, extractFacts, ExtractedTask, ExtractedResource } from '../ll
 import { sql } from 'drizzle-orm';
 
 const SIMILARITY_THRESHOLD = 0.8;
-const MAX_CONTEXT_MESSAGES = 10;
+const MAX_CONTEXT_MESSAGES = 50;
 
 // ---------------------------------------------------------------------------
 // Fetch thread / channel context
@@ -78,12 +78,13 @@ async function findSimilarDecisions(embedding: number[]) {
 // ---------------------------------------------------------------------------
 async function saveDecisions(
   extracted: Awaited<ReturnType<typeof extractFacts>>['decisions'],
-  embedding: number[],
   channelId: string,
   messageTs: string,
   threadTs?: string
 ) {
   for (const d of extracted) {
+    // Embed per-decision for more precise similarity matching
+    const decisionEmbedding = await embedText(d.question + ' ' + d.answer);
     const newDecision: NewDecision = {
       question: d.question,
       answer: d.answer,
@@ -91,7 +92,7 @@ async function saveDecisions(
       channelId,
       messageTs,
       threadTs: threadTs ?? null,
-      embedding,
+      embedding: decisionEmbedding,
     };
     await db.insert(decisions).values(newDecision);
   }
@@ -103,13 +104,14 @@ async function saveDecisions(
 // ---------------------------------------------------------------------------
 async function saveExperts(
   extracted: Awaited<ReturnType<typeof extractFacts>>['experts'],
+  userId: string,
   messageTs: string
 ) {
   for (const e of extracted) {
     for (const skill of e.skills) {
       await db.execute(sql`
         INSERT INTO experts (user_id, skill, evidence_count, message_ts)
-        VALUES (${e.user_id}, ${skill}, 1, ${messageTs})
+        VALUES (${userId}, ${skill}, 1, ${messageTs})
         ON CONFLICT ON CONSTRAINT experts_user_skill_unique
         DO UPDATE SET evidence_count = experts.evidence_count + 1
       `);
@@ -174,8 +176,8 @@ export async function handleMessage(params: {
 
   // Skip bot messages
   if (userId === botUserId) return;
-  // Skip very short messages (reactions, acknowledgements)
-  if (!text || text.trim().length < 20) return;
+  // Skip very short messages (bot commands, empty pings)
+  if (!text || text.trim().length < 5) return;
 
   console.log(`[messageHandler] Processing message in ${channelId} from ${userId}`);
 
@@ -185,24 +187,25 @@ export async function handleMessage(params: {
 
     // 2. Extract facts with LLM
     const facts = await extractFacts(text, context);
+    console.log('[messageHandler] Raw facts:', JSON.stringify(facts, null, 2));
     console.log(
       `[messageHandler] Extracted: ${facts.decisions.length} decisions, ` +
       `${facts.experts.length} experts, ${facts.tasks.length} tasks, ` +
       `${facts.resources.length} resources`
     );
 
-    // 3. Embed the message text
+    // 3. Embed the message text (used for proactive similarity check)
     const embedding = await embedText(text);
 
-    // 4. Save extracted decisions with their embeddings
+    // 4. Save extracted decisions (each gets its own embedding)
     if (facts.decisions.length > 0) {
-      await saveDecisions(facts.decisions, embedding, channelId, ts, threadTs);
+      await saveDecisions(facts.decisions, channelId, ts, threadTs);
       console.log(`[messageHandler] Saved ${facts.decisions.length} decision(s)`);
     }
 
     // 5. Save extracted experts (upserts evidence count)
     if (facts.experts.length > 0) {
-      await saveExperts(facts.experts, ts);
+      await saveExperts(facts.experts, userId, ts);
       console.log(`[messageHandler] Saved/updated expert records`);
     }
 
