@@ -5,7 +5,6 @@ import { embedText, extractFacts, ExtractedTask, ExtractedResource } from '../ll
 import { sql } from 'drizzle-orm';
 
 const SIMILARITY_THRESHOLD = 0.8;
-const MAX_CONTEXT_MESSAGES = 50;
 
 // ---------------------------------------------------------------------------
 // Fetch thread / channel context
@@ -20,16 +19,17 @@ async function fetchContext(
     let messages: { user?: string; text?: string; ts?: string }[] = [];
 
     if (threadTs) {
+      // Fetch the entire thread
       const result = await client.conversations.replies({
         channel: channelId,
         ts: threadTs,
-        limit: MAX_CONTEXT_MESSAGES,
       });
       messages = (result.messages ?? []).slice(0, -1); // exclude the triggering message
     } else {
+      // Fetch only the last 10 channel messages
       const result = await client.conversations.history({
         channel: channelId,
-        limit: MAX_CONTEXT_MESSAGES,
+        limit: 10,
       });
       messages = (result.messages ?? []).reverse().slice(0, -1);
     }
@@ -83,12 +83,7 @@ async function saveDecisions(
   threadTs?: string
 ) {
   for (const d of extracted) {
-    // Embed per-decision for more precise similarity matching
-
     const decisionEmbedding = await embedText(d.question + ' ' + d.answer);
-    console.log("[saveDecisions] Embedding:");
-    console.log(JSON.stringify(decisionEmbedding, null, 2));
-
     const newDecision: NewDecision = {
       question: d.question,
       answer: d.answer,
@@ -98,37 +93,41 @@ async function saveDecisions(
       threadTs: threadTs ?? null,
       embedding: decisionEmbedding,
     };
-    await db.insert(decisions).values(newDecision);
+    console.log('[saveDecisions] Inserting decision:', JSON.stringify(newDecision, null, 2));
+    try {
+      await db.insert(decisions).values(newDecision);
+      console.log('[saveDecisions] Decision saved successfully.');
+    } catch (err) {
+      console.error('[saveDecisions] Failed to insert decision:', err);
+    }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Upsert experts — increments evidence_count on conflict
-// (Requires UNIQUE(user_id, skill) constraint on the experts table)
-// ---------------------------------------------------------------------------
 async function saveExperts(
   extracted: Awaited<ReturnType<typeof extractFacts>>['experts'],
   userId: string,
   messageTs: string
 ) {
   for (const e of extracted) {
-    console.log("[saveExperts]");
-    console.log(JSON.stringify(e, null, 2));
-
+    console.log('[saveExperts] Processing expert entry:', JSON.stringify(e, null, 2));
     for (const skill of e.skills) {
-      await db.execute(sql`
-        INSERT INTO experts (user_id, skill, evidence_count, message_ts)
-        VALUES (${userId}, ${skill}, 1, ${messageTs})
-        ON CONFLICT ON CONSTRAINT experts_user_skill_unique
-        DO UPDATE SET evidence_count = experts.evidence_count + 1
-      `);
+      const expertInsert = { userId, skill, evidenceCount: 1, messageTs };
+      console.log('[saveExperts] Inserting/upserting expert:', JSON.stringify(expertInsert, null, 2));
+      try {
+        await db.execute(sql`
+          INSERT INTO experts (user_id, skill, evidence_count, message_ts)
+          VALUES (${userId}, ${skill}, 1, ${messageTs})
+          ON CONFLICT ON CONSTRAINT experts_user_skill_unique
+          DO UPDATE SET evidence_count = experts.evidence_count + 1
+        `);
+        console.log('[saveExperts] Expert saved/upserted successfully.');
+      } catch (err) {
+        console.error('[saveExperts] Failed to insert/upsert expert:', err);
+      }
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Save tasks extracted from a message
-// ---------------------------------------------------------------------------
 async function saveTasks(
   extracted: ExtractedTask[],
   channelId: string,
@@ -143,13 +142,16 @@ async function saveTasks(
       channelId,
       messageTs,
     };
-    await db.insert(tasks).values(newTask);
+    console.log('[saveTasks] Inserting task:', JSON.stringify(newTask, null, 2));
+    try {
+      await db.insert(tasks).values(newTask);
+      console.log('[saveTasks] Task saved successfully.');
+    } catch (err) {
+      console.error('[saveTasks] Failed to insert task:', err);
+    }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Save resources extracted from a message
-// ---------------------------------------------------------------------------
 async function saveResources(
   extracted: ExtractedResource[],
   channelId: string,
@@ -163,8 +165,28 @@ async function saveResources(
       channelId,
       messageTs,
     };
-    await db.insert(resources).values(newResource);
+    console.log('[saveResources] Inserting resource:', JSON.stringify(newResource, null, 2));
+    try {
+      await db.insert(resources).values(newResource);
+      console.log('[saveResources] Resource saved successfully.');
+    } catch (err) {
+      console.error('[saveResources] Failed to insert resource:', err);
+    }
   }
+}
+
+function isEmojiOnly(text: string): boolean {
+  const clean = text.trim();
+  if (!clean) return false;
+
+  // Remove Slack emojis
+  const withoutSlack = clean.replace(/:[a-zA-Z0-9_+-]+:/g, '').trim();
+  if (!withoutSlack) return true;
+
+  // Unicode emoji regex
+  const emojiRegex = /[\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{1FA70}-\u{1FAFF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{200D}\u{1F1E6}-\u{1F1FF}]/gu;
+  const withoutUnicode = withoutSlack.replace(emojiRegex, '').trim();
+  return withoutUnicode === '';
 }
 
 // ---------------------------------------------------------------------------
@@ -183,8 +205,10 @@ export async function handleMessage(params: {
 
   // Skip bot messages
   if (userId === botUserId) return;
-  // Skip very short messages (bot commands, empty pings)
-  if (!text || text.trim().length < 5) return;
+  // Skip empty/whitespace-only messages
+  if (!text || !text.trim()) return;
+  // Skip emoji-only messages
+  if (isEmojiOnly(text)) return;
 
   console.log(`[messageHandler] Processing message in ${channelId} from ${userId}`);
 

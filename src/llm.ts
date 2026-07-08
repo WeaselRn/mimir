@@ -10,6 +10,11 @@ if (!geminiApiKey) {
 
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
+export const MODELS = {
+  chat: 'gemini-3.1-flash-lite',
+  embedding: 'gemini-embedding-001',
+};
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -47,9 +52,8 @@ export interface ExtractedFacts {
 // ---------------------------------------------------------------------------
 export async function embedText(text: string): Promise<number[]> {
   const response = await ai.models.embedContent({
-    model: 'gemini-embedding-exp-03-07',
+    model: MODELS.embedding,
     contents: text,
-    config: { outputDimensionality: 768 },
   });
 
   const values = response.embeddings?.[0]?.values;
@@ -62,35 +66,48 @@ export async function embedText(text: string): Promise<number[]> {
 // ---------------------------------------------------------------------------
 // Fact Extraction
 // ---------------------------------------------------------------------------
-const EXTRACT_SYSTEM_PROMPT = `You are a Slack assistant that identifies decisions, expertise, tasks, and resources from a conversation.
+const EXTRACT_SYSTEM_PROMPT = `You are an organizational memory engine for a Slack workspace.
+Your task is to extract information that another employee would want to remember six months later.
 Given the conversation context and the latest message, extract structured knowledge.
 
 Return a JSON object with four arrays: decisions, experts, tasks, resources.
 
-1. decisions — concrete decisions made in the conversation.
-   Each entry: { "question", "answer", "participants" (Slack IDs of involved users) }.
-   Example — Alice: "Should we use Redis or PostgreSQL?" Bob: "Redis because of built-in TTL."
-   → { "question": "Should we use Redis or PostgreSQL for caching?", "answer": "Redis", "participants": ["Alice","Bob"] }
-   If no decision is present, output [].
+1. decisions — architectural decisions, technology choices, rejected alternatives, and their reasoning.
+   - Infer decisions whenever there is clear agreement.
+   - Example conversation:
+     Alice: "Should we use Clerk?"
+     Bob: "We'll use Clerk."
+     -> Output decision: { "question": "Should we use Clerk?", "answer": "Use Clerk for authentication.", "participants": ["Alice", "Bob"] }
+   - Example conversation:
+     Alice: "Should we use Redis or PostgreSQL for caching?"
+     Bob: "Redis because it has built-in TTL support."
+     -> Output decision: { "question": "Should we use Redis or PostgreSQL for caching?", "answer": "Redis because of built-in TTL support.", "participants": ["Alice", "Bob"] }
+   - Each entry must be: { "question", "answer", "participants" (Slack IDs/names of involved users) }.
+   - If no decision is present, output [].
 
-2. experts — skills the message author demonstrably knows ("I know X", "I wrote Y", "I fixed Z").
-   Each entry: { "skills": ["Topic1", "Topic2"] }  (user_id will be attached by code — do NOT include it).
-   Example — "I have 10 years with Docker and Kubernetes" → { "skills": ["Docker","Kubernetes"] }
-   If no expertise is demonstrated, output [].
+2. experts — skills or topics that the message author demonstrably knows.
+   - Look for concrete evidence of expertise (e.g., explaining concepts, debugging, solving problems, recommending technologies, saying "I've used...", "I know...", comparing technologies, teaching another user).
+   - Do not invent skills. Only list skills demonstrated with high confidence.
+   - Each entry must be: { "skills": ["Topic1", "Topic2"] } (Do NOT include a user_id field).
+   - Example: "I have 10 years of experience with Docker and Kubernetes" -> { "skills": ["Docker", "Kubernetes"] }
+   - If no expertise is demonstrated, output [].
 
-3. tasks — explicit commitments or action items.
-   Each entry: { "title", "assignee"? (Slack ID), "due_date"? }.
-   Example — "I'll finish the API by tomorrow" → { "title": "Finish the API", "assignee": "U1234", "due_date": "2026-07-09" }
-   If no task is mentioned, output [].
+3. tasks — commitments, action items, ownership, or deadlines.
+   - Look for explicit commitments (e.g., "I'll do X by Y", "We need to complete Z").
+   - Each entry must be: { "title", "assignee"? (Slack ID), "due_date"? }.
+   - Example: "I'll finish the API by tomorrow" -> { "title": "Finish the API", "assignee": "U1234", "due_date": "2026-07-09" }
+   - If no task is mentioned, output [].
 
-4. resources — links, docs, or tools shared.
-   Each entry: { "title", "url"?, "description"? }.
-   If nothing is shared, output [].
+4. resources — links, documents, tools, or references shared.
+   - Each entry must be: { "title", "url"?, "description"? }.
+   - If nothing is shared, output [].
 
-Rules:
-- Be inclusive: prefer capturing a real item over missing it.
-- participants should be Slack user IDs (e.g. U12345) when available, else display names.
-- Do NOT include user_id inside expert entries.`;
+Rules & Filtering:
+- Ignore greetings, acknowledgements, jokes, or casual conversation.
+- Be inclusive: prefer capturing a real item over missing it, as long as it has long-term organizational value.
+- participants should be Slack user IDs (e.g., U12345) when available, else display names.
+- Do NOT include any user_id or userId inside the expert entries.
+- Return strict JSON only.`;
 
 export async function extractFacts(
   message: string,
@@ -101,12 +118,13 @@ export async function extractFacts(
     : message;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3.1-flash-lite',
+    model: MODELS.chat,
     contents: [
       { role: 'user', parts: [{ text: prompt }] },
     ],
     config: {
       systemInstruction: EXTRACT_SYSTEM_PROMPT,
+      temperature: 0.1,
       responseMimeType: 'application/json',
       responseSchema: {
         type: 'object' as const,
@@ -165,14 +183,27 @@ export async function extractFacts(
 
   const text = response.text;
   if (!text) {
+    console.log('No organizational memory extracted.');
     return { decisions: [], experts: [], tasks: [], resources: [] };
   }
 
   try {
-    return (JSON.parse(text) as unknown) as ExtractedFacts;
-  } catch {
-    console.error('[llm] Failed to parse extractFacts response:', text);
-    return { decisions: [], experts: [], tasks: [], resources: [] };
+    const parsed = JSON.parse(text) as unknown as ExtractedFacts;
+    const hasData =
+      (parsed.decisions && parsed.decisions.length > 0) ||
+      (parsed.experts && parsed.experts.length > 0) ||
+      (parsed.tasks && parsed.tasks.length > 0) ||
+      (parsed.resources && parsed.resources.length > 0);
+
+    if (!hasData) {
+      console.log('No organizational memory extracted.');
+    }
+    return parsed;
+  } catch (error) {
+    console.error('Failed to parse Gemini response as JSON:');
+    console.error('Raw response:', text);
+    console.error('Parsing error:', error);
+    throw error;
   }
 }
 
@@ -282,7 +313,7 @@ export async function answerQuery(
   const prompt = `Relevant org memory:\n\n${contextBlock}\n\nUser query: ${query}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3.1-flash-lite',
+    model: MODELS.chat,
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       systemInstruction: ANSWER_SYSTEM_PROMPT,
