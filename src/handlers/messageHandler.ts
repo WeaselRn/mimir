@@ -84,7 +84,11 @@ async function saveDecisions(
 ) {
   for (const d of extracted) {
     // Embed per-decision for more precise similarity matching
+
     const decisionEmbedding = await embedText(d.question + ' ' + d.answer);
+    console.log("[saveDecisions] Embedding:");
+    console.log(JSON.stringify(decisionEmbedding, null, 2));
+
     const newDecision: NewDecision = {
       question: d.question,
       answer: d.answer,
@@ -108,6 +112,9 @@ async function saveExperts(
   messageTs: string
 ) {
   for (const e of extracted) {
+    console.log("[saveExperts]");
+    console.log(JSON.stringify(e, null, 2));
+
     for (const skill of e.skills) {
       await db.execute(sql`
         INSERT INTO experts (user_id, skill, evidence_count, message_ts)
@@ -215,7 +222,7 @@ export async function handleMessage(params: {
       console.log("[messageHandler] Saving decisions...");
       console.log(JSON.stringify(facts.decisions, null, 2));
 
-      await saveDecisions(facts.decisions, embedding, channelId, ts, threadTs);
+      await saveDecisions(facts.decisions, channelId, ts, threadTs);
 
       console.log("[messageHandler] ✅ Decisions saved.");
     } else {
@@ -224,8 +231,14 @@ export async function handleMessage(params: {
 
     // 5. Save extracted experts (upserts evidence count)
     if (facts.experts.length > 0) {
+      console.log("[messageHandler] Saving experts...");
+      console.log(JSON.stringify(facts.experts, null, 2));
+
       await saveExperts(facts.experts, userId, ts);
-      console.log(`[messageHandler] Saved/updated expert records`);
+
+      console.log("[messageHandler] ✅ Experts saved.");
+    } else {
+      console.log("[messageHandler] ❌ No experts extracted.");
     }
 
     // 6. Save extracted tasks
