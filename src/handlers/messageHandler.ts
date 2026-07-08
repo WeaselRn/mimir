@@ -212,8 +212,14 @@ export async function handleMessage(params: {
 
     // 4. Save extracted decisions (each gets its own embedding)
     if (facts.decisions.length > 0) {
-      await saveDecisions(facts.decisions, channelId, ts, threadTs);
-      console.log(`[messageHandler] Saved ${facts.decisions.length} decision(s)`);
+      console.log("[messageHandler] Saving decisions...");
+      console.log(JSON.stringify(facts.decisions, null, 2));
+
+      await saveDecisions(facts.decisions, embedding, channelId, ts, threadTs);
+
+      console.log("[messageHandler] ✅ Decisions saved.");
+    } else {
+      console.log("[messageHandler] ❌ No decisions extracted.");
     }
 
     // 5. Save extracted experts (upserts evidence count)
