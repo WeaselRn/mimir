@@ -187,12 +187,25 @@ export async function handleMessage(params: {
 
     // 2. Extract facts with LLM
     const facts = await extractFacts(text, context);
-    console.log('[messageHandler] Raw facts:', JSON.stringify(facts, null, 2));
+
+    console.log("========== GEMINI EXTRACTION ==========");
+    console.log("Message:");
+    console.log(text);
+
+    console.log("Context:");
+    console.log(context || "(none)");
+
+    console.log("Facts:");
+    console.log(JSON.stringify(facts, null, 2));
+
     console.log(
       `[messageHandler] Extracted: ${facts.decisions.length} decisions, ` +
-      `${facts.experts.length} experts, ${facts.tasks.length} tasks, ` +
+      `${facts.experts.length} experts, ` +
+      `${facts.tasks.length} tasks, ` +
       `${facts.resources.length} resources`
     );
+
+    console.log("=======================================");
 
     // 3. Embed the message text (used for proactive similarity check)
     const embedding = await embedText(text);
