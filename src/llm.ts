@@ -101,7 +101,7 @@ export async function extractFacts(
     : message;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.1-flash-lite',
     contents: [
       { role: 'user', parts: [{ text: prompt }] },
     ],
@@ -282,7 +282,7 @@ export async function answerQuery(
   const prompt = `Relevant org memory:\n\n${contextBlock}\n\nUser query: ${query}`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-3.1-flash-lite',
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       systemInstruction: ANSWER_SYSTEM_PROMPT,
